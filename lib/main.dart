@@ -106,6 +106,27 @@ class CanService extends ChangeNotifier {
   final List<String> _logRows = [];
   int frameCount = 0;
 
+  // CAN trace ring buffer (raw SLCAN frames, TX + RX)
+  static const int _traceMax = 1000;
+  final List<String> _canTrace = [];
+  int _traceStart = 0;
+
+  void _trace(String dir, String frame) {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    if (_traceStart == 0) _traceStart = now;
+    if (_canTrace.length >= _traceMax) _canTrace.removeAt(0);
+    _canTrace.add('${now - _traceStart} $dir ${frame.replaceAll('\r', '').replaceAll('\n', '')}');
+  }
+
+  Future<String> dumpTrace() async {
+    final dir = await getApplicationDocumentsDirectory();
+    final ts = DateTime.now().toIso8601String().replaceAll(':', '-').substring(0, 19);
+    final file = File('${dir.path}/haltech_can_trace_$ts.txt');
+    final header = '# Haltech CAN trace - $ts\n# Format: <ms_since_first_frame> <TX|RX> <slcan_frame>\n';
+    await file.writeAsString(header + _canTrace.join('\n'));
+    return file.path;
+  }
+
   void connect(String ip) {
     disconnect();
     status = 'CONNECTING';
@@ -120,7 +141,9 @@ class CanService extends ChangeNotifier {
             _startKeepAlive();
             notifyListeners();
           }
-          _parse(msg.toString().trim());
+          final s = msg.toString().trim();
+          _trace('RX', s);
+          _parse(s);
         },
         onError: (_) => _setOff('ERROR'),
         onDone: () => _setOff('DISCONNECTED'),
@@ -134,7 +157,9 @@ class CanService extends ChangeNotifier {
     _keepAliveTimer?.cancel();
     _keepAliveTimer = Timer.periodic(const Duration(milliseconds: 100), (_) {
       if (_channel == null || !connected) return;
-      _channel!.sink.add('t2C6510090A0000\r');
+      const ka = 't2C6510090A0000\r';
+      _channel!.sink.add(ka);
+      _trace('TX', ka);
       _sendAvi();
     });
   }
@@ -164,7 +189,9 @@ class CanService extends ChangeNotifier {
   void _sendAvi() {
     if (_channel == null || !connected) return;
     String h(bool on) => on ? '0FFF' : '0000';
-    _channel!.sink.add('t2C08${h(avi[0])}${h(avi[1])}00000000\r');
+    final frame = 't2C08${h(avi[0])}${h(avi[1])}00000000\r';
+    _channel!.sink.add(frame);
+    _trace('TX', frame);
   }
 
   void startLogging() {
@@ -538,6 +565,14 @@ class _DashHomeState extends State<DashHome> {
           const SizedBox(height: 12),
           _logButton(),
           const SizedBox(height: 24),
+          Text('DEBUG',
+            style: GoogleFonts.orbitron(
+              fontSize: 13, fontWeight: FontWeight.w700,
+              color: _dim, letterSpacing: 4,
+            )),
+          const SizedBox(height: 12),
+          _dumpTraceButton(),
+          const SizedBox(height: 24),
           Container(
             padding: const EdgeInsets.all(12),
             decoration: BoxDecoration(
@@ -550,6 +585,38 @@ class _DashHomeState extends State<DashHome> {
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _dumpTraceButton() {
+    return GestureDetector(
+      onTap: () async {
+        final path = await _svc.dumpTrace();
+        if (!mounted) return;
+        await SharePlus.instance.share(
+          ShareParams(files: [XFile(path)], subject: 'Haltech CAN Trace'),
+        );
+      },
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.symmetric(vertical: 14),
+        decoration: BoxDecoration(
+          color: _panel,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: _border),
+        ),
+        child: Column(
+          children: [
+            Icon(Icons.bug_report, color: _dim, size: 24),
+            const SizedBox(height: 4),
+            Text('DUMP CAN TRACE',
+              style: GoogleFonts.orbitron(
+                fontSize: 12, fontWeight: FontWeight.w900,
+                color: _dim, letterSpacing: 2,
+              )),
+          ],
+        ),
       ),
     );
   }
