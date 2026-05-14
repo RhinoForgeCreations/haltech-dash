@@ -98,7 +98,6 @@ class CanService extends ChangeNotifier {
   String status = 'DISCONNECTED';
   final CanData data = CanData();
   final List<bool> avi = [false, false];
-  Timer? _txTimer;
   Timer? _keepAliveTimer;
 
   // Logging
@@ -134,35 +133,31 @@ class CanService extends ChangeNotifier {
   void _startKeepAlive() {
     _keepAliveTimer?.cancel();
     _keepAliveTimer = Timer.periodic(const Duration(milliseconds: 100), (_) {
-      if (_channel != null && connected) {
-        _channel!.sink.add('t2C6510090A0000\r');
-      }
+      if (_channel == null || !connected) return;
+      _channel!.sink.add('t2C6510090A0000\r');
+      _sendAvi();
     });
   }
 
   void _setOff(String s) {
-    _txTimer?.cancel(); _txTimer = null;
     _keepAliveTimer?.cancel(); _keepAliveTimer = null;
     connected = false; status = s;
+    avi[0] = false; avi[1] = false;
     notifyListeners();
   }
 
   void disconnect() {
-    _txTimer?.cancel(); _txTimer = null;
     _keepAliveTimer?.cancel(); _keepAliveTimer = null;
     _sub?.cancel();
     _channel?.sink.close();
     connected = false; status = 'DISCONNECTED';
+    avi[0] = false; avi[1] = false;
     notifyListeners();
   }
 
   void toggleAvi(int i) {
     avi[i] = !avi[i];
-    _txTimer?.cancel(); _txTimer = null;
     _sendAvi();
-    if (avi.any((v) => v)) {
-      _txTimer = Timer.periodic(const Duration(milliseconds: 100), (_) => _sendAvi());
-    }
     notifyListeners();
   }
 
