@@ -106,6 +106,17 @@ class CanService extends ChangeNotifier {
   int _logStart = 0;
   final List<String> _logRows = [];
   int frameCount = 0;
+  int txCount = 0;
+  String lastTx = '';
+
+  void _send(String frame) {
+    if (_channel == null) return;
+    _channel!.sink.add(frame);
+    if (frame.length > 1 && (frame[0] == 't' || frame[0] == 'T')) {
+      txCount++;
+      lastTx = frame.trim();
+    }
+  }
 
   void connect(String ip) {
     disconnect();
@@ -113,6 +124,12 @@ class CanService extends ChangeNotifier {
     notifyListeners();
     try {
       _channel = WebSocketChannel.connect(Uri.parse('ws://$ip/ws'));
+      // SLCAN init: WiCAN gates TX behind an explicit Open Channel command.
+      // Without this, every t...\r frame we send is silently dropped — RX still works.
+      _channel!.sink.add('\r');     // flush any half-written command
+      _channel!.sink.add('C\r');    // close channel if already open (idempotent)
+      _channel!.sink.add('S8\r');   // bitrate = 1 Mbps (Haltech CAN)
+      _channel!.sink.add('O\r');    // open channel — TX gated on this
       _sub = _channel!.stream.listen(
         (msg) {
           if (!connected) {
@@ -135,7 +152,7 @@ class CanService extends ChangeNotifier {
     _keepAliveTimer?.cancel();
     _keepAliveTimer = Timer.periodic(const Duration(milliseconds: 100), (_) {
       if (_channel != null && connected) {
-        _channel!.sink.add('t2C6510090A0000\r');
+        _send('t2C6510090A0000\r');
       }
     });
   }
@@ -169,7 +186,7 @@ class CanService extends ChangeNotifier {
   void _sendAvi() {
     if (_channel == null || !connected) return;
     String h(bool on) => on ? '0FFF' : '0000';
-    _channel!.sink.add('t2C08${h(avi[0])}${h(avi[1])}00000000\r');
+    _send('t2C08${h(avi[0])}${h(avi[1])}00000000\r');
   }
 
   void startLogging() {
@@ -362,8 +379,14 @@ class _DashHomeState extends State<DashHome> {
             )),
           if (live) ...[
             const SizedBox(width: 8),
-            Text('${_svc.frameCount}',
+            Text('RX ${_svc.frameCount}',
               style: GoogleFonts.rajdhani(fontSize: 11, color: _dim)),
+            const SizedBox(width: 6),
+            Text('TX ${_svc.txCount}',
+              style: GoogleFonts.rajdhani(
+                fontSize: 11,
+                color: _svc.txCount > 0 ? _orange : _dim,
+              )),
           ],
           const Spacer(),
           SizedBox(
@@ -552,6 +575,35 @@ class _DashHomeState extends State<DashHome> {
             child: Text(
               'NSP setup:\nFunctions → CAN → IO Box\nAVI1 → Launch Control Switch\nAVI2 → Anti-Lag Switch',
               style: GoogleFonts.rajdhani(fontSize: 12, color: _dim, height: 1.6),
+            ),
+          ),
+          const SizedBox(height: 12),
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: _panel, borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: _border),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('LAST TX',
+                  style: GoogleFonts.orbitron(
+                    fontSize: 10, fontWeight: FontWeight.w700,
+                    color: _dim, letterSpacing: 2,
+                  )),
+                const SizedBox(height: 4),
+                Text(
+                  _svc.lastTx.isEmpty ? '—' : _svc.lastTx,
+                  style: GoogleFonts.firaCode(
+                    fontSize: 11,
+                    color: _svc.lastTx.isEmpty ? _dim : _orange,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text('TX count: ${_svc.txCount}',
+                  style: GoogleFonts.rajdhani(fontSize: 11, color: _dim)),
+              ],
             ),
           ),
         ],
