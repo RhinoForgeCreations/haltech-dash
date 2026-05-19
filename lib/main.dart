@@ -150,7 +150,9 @@ class CanService extends ChangeNotifier {
 
   void _startKeepAlive() {
     _keepAliveTimer?.cancel();
-    _keepAliveTimer = Timer.periodic(const Duration(milliseconds: 100), (_) {
+    // 50 Hz to match real Haltech I/O Box A broadcast rate (same watchdog window
+    // as 0x2C0 — slower TX caused virtual inputs to time out between frames).
+    _keepAliveTimer = Timer.periodic(const Duration(milliseconds: 20), (_) {
       if (_channel != null && connected) {
         _send('t2C6510090A0000\r');
       }
@@ -178,7 +180,10 @@ class CanService extends ChangeNotifier {
     _txTimer?.cancel(); _txTimer = null;
     _sendAvi();
     if (avi.any((v) => v)) {
-      _txTimer = Timer.periodic(const Duration(milliseconds: 100), (_) => _sendAvi());
+      // 50 Hz refresh — matches real Haltech I/O Box A broadcast rate.
+      // ECU watchdog times out a virtual AVI back to 0 if no fresh 0x2C0 frame
+      // arrives within ~50ms, which produced a 0/4095/0/4095 square wave at 100ms.
+      _txTimer = Timer.periodic(const Duration(milliseconds: 20), (_) => _sendAvi());
     }
     notifyListeners();
   }
