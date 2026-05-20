@@ -97,7 +97,8 @@ class CanService extends ChangeNotifier {
   bool connected = false;
   String status = 'DISCONNECTED';
   final CanData data = CanData();
-  final List<bool> avi = [false, false];
+  final List<bool> avi = [false, false];          // AVI1, AVI2 in frame 0x2C0
+  final List<bool> dpi = [false, false, false, false]; // DPI1-4 in frames 0x2C2, 0x2C4
   Timer? _txTimer;
   Timer? _keepAliveTimer;
 
@@ -135,7 +136,7 @@ class CanService extends ChangeNotifier {
           if (!connected) {
             connected = true;
             status = 'LIVE';
-            _startKeepAlive();
+            _startBoxBroadcast();
             notifyListeners();
           }
           _parse(msg.toString().trim());
@@ -148,11 +149,18 @@ class CanService extends ChangeNotifier {
     }
   }
 
-  void _startKeepAlive() {
+  // Always-on IO Expander Box A emulation. Reference: PT Motorsport open-source
+  // emulator (https://github.com/ptmotorsport/IObox-emulator-haltech).
+  // ECU only latches Box A out of boot mode when it sees the full broadcast set
+  // (AVI 0x2C0, DPI 0x2C2 + 0x2C4 every 20 ms; keep-alive 0x2C6 every 100 ms).
+  // Earlier code only TXed 0x2C0 on button press and ran keep-alive at 20 ms —
+  // both wrong, which caused the boot-mode/firmware-1.10.0 state flicker.
+  void _startBoxBroadcast() {
+    _txTimer?.cancel();
+    _txTimer = Timer.periodic(const Duration(milliseconds: 20), (_) => _sendIoBoxFrames());
+
     _keepAliveTimer?.cancel();
-    // 50 Hz to match real Haltech I/O Box A broadcast rate (same watchdog window
-    // as 0x2C0 — slower TX caused virtual inputs to time out between frames).
-    _keepAliveTimer = Timer.periodic(const Duration(milliseconds: 20), (_) {
+    _keepAliveTimer = Timer.periodic(const Duration(milliseconds: 100), (_) {
       if (_channel != null && connected) {
         _send('t2C6510090A0000\r');
       }
@@ -175,23 +183,28 @@ class CanService extends ChangeNotifier {
     notifyListeners();
   }
 
+  // Toggles only flip in-memory state — the always-on broadcast timer reads
+  // these on every tick, so the ECU sees the change inside one 20 ms cycle.
   void toggleAvi(int i) {
     avi[i] = !avi[i];
-    _txTimer?.cancel(); _txTimer = null;
-    _sendAvi();
-    if (avi.any((v) => v)) {
-      // 50 Hz refresh — matches real Haltech I/O Box A broadcast rate.
-      // ECU watchdog times out a virtual AVI back to 0 if no fresh 0x2C0 frame
-      // arrives within ~50ms, which produced a 0/4095/0/4095 square wave at 100ms.
-      _txTimer = Timer.periodic(const Duration(milliseconds: 20), (_) => _sendAvi());
-    }
     notifyListeners();
   }
 
-  void _sendAvi() {
+  void toggleDpi(int i) {
+    dpi[i] = !dpi[i];
+    notifyListeners();
+  }
+
+  void _sendIoBoxFrames() {
     if (_channel == null || !connected) return;
-    String h(bool on) => on ? '0FFF' : '0000';
-    _send('t2C08${h(avi[0])}${h(avi[1])}00000000\r');
+    String avih(bool on) => on ? '0FFF' : '0000';        // 0xFFF = 4095 = 5V
+    String dpih(bool on) => on ? 'FA' : '00';            // 0xFA matches PT Motorsport emulator
+    // 0x2C0: AVI1 + AVI2 + AVI3 + AVI4 (16-bit big-endian, AVI3+AVI4 always 0)
+    _send('t2C08${avih(avi[0])}${avih(avi[1])}00000000\r');
+    // 0x2C2: DPI1 (byte 0) + DPI2 (byte 4), zeros elsewhere
+    _send('t2C28${dpih(dpi[0])}000000${dpih(dpi[1])}000000\r');
+    // 0x2C4: DPI3 (byte 0) + DPI4 (byte 4)
+    _send('t2C48${dpih(dpi[2])}000000${dpih(dpi[3])}000000\r');
   }
 
   void startLogging() {
@@ -329,6 +342,8 @@ class _DashHomeState extends State<DashHome> {
   static const _cyan   = Color(0xFF00B4D8);
   static const _red    = Color(0xFFFF1744);
   static const _green  = Color(0xFF00E676);
+  static const _yellow = Color(0xFFFFC107);
+  static const _purple = Color(0xFFAB47BC);
   static const _bg     = Color(0xFF080808);
   static const _panel  = Color(0xFF101010);
   static const _border = Color(0xFF1C1C1C);
@@ -562,6 +577,22 @@ class _DashHomeState extends State<DashHome> {
               Expanded(child: _aviBtn(1, 'ANTI\nLAG', _cyan)),
             ],
           ),
+          const SizedBox(height: 16),
+          Row(
+            children: [
+              Expanded(child: _dpiBtn(0, 'BTN 3\nDPI 1', _green)),
+              const SizedBox(width: 16),
+              Expanded(child: _dpiBtn(1, 'BTN 4\nDPI 2', _red)),
+            ],
+          ),
+          const SizedBox(height: 16),
+          Row(
+            children: [
+              Expanded(child: _dpiBtn(2, 'BTN 5\nDPI 3', _yellow)),
+              const SizedBox(width: 16),
+              Expanded(child: _dpiBtn(3, 'BTN 6\nDPI 4', _purple)),
+            ],
+          ),
           const SizedBox(height: 24),
           Text('LOGGING',
             style: GoogleFonts.orbitron(
@@ -578,7 +609,7 @@ class _DashHomeState extends State<DashHome> {
               border: Border.all(color: _border),
             ),
             child: Text(
-              'NSP setup:\nFunctions → CAN → IO Box\nAVI1 → Launch Control Switch\nAVI2 → Anti-Lag Switch',
+              'NSP setup:\nFunctions → CAN → IO Expander Box A\nAVI 1 → Launch Control Switch\nAVI 2 → Anti-Lag Switch\nDPI 1-4 → any switch function (BTN 3-6)',
               style: GoogleFonts.rajdhani(fontSize: 12, color: _dim, height: 1.6),
             ),
           ),
@@ -641,6 +672,39 @@ class _DashHomeState extends State<DashHome> {
             Text(on ? 'ON' : 'OFF',
               style: GoogleFonts.rajdhani(
                 fontSize: 12, fontWeight: FontWeight.w700,
+                color: on ? col : const Color(0xFF333333), letterSpacing: 3,
+              )),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _dpiBtn(int i, String label, Color col) {
+    final on = _svc.dpi[i];
+    return GestureDetector(
+      onTap: () => _svc.toggleDpi(i),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 150),
+        height: 96,
+        decoration: BoxDecoration(
+          color: on ? col.withValues(alpha: 0.12) : _panel,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: on ? col : _border, width: on ? 2 : 1),
+        ),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Text(label,
+              textAlign: TextAlign.center,
+              style: GoogleFonts.orbitron(
+                fontSize: 14, fontWeight: FontWeight.w900,
+                color: on ? col : _dim, height: 1.3,
+              )),
+            const SizedBox(height: 6),
+            Text(on ? 'ON' : 'OFF',
+              style: GoogleFonts.rajdhani(
+                fontSize: 11, fontWeight: FontWeight.w700,
                 color: on ? col : const Color(0xFF333333), letterSpacing: 3,
               )),
           ],
